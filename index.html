@@ -3,6 +3,16 @@
 <head>
   <!-- Meta / Google Fonts / CSS -->
   <meta charset="utf-8">
+  <!--
+    Content Security Policy — จำกัด origin เท่าที่แอปใช้จริง:
+    · script: Chart.js (cdnjs), Firebase SDK 13.1.0 (www.gstatic.com), gapi สำหรับ Google Sign-in (apis.google.com)
+    · connect: Firebase Auth (identitytoolkit, securetoken), Firestore, www.googleapis.com
+    · frame: หน้า auth ของ Firebase (authDomain) และ Google accounts
+    · ยังต้องใช้ 'unsafe-inline' เพราะเป็น single-file ที่มี inline <script>/<style> และ style="" ในโค้ด
+      (ถ้าใช้ hash แทน ทุกครั้งที่แก้โค้ดต้องคำนวณ hash ใหม่ ไม่เช่นนั้นแอปจะไม่ทำงาน)
+    · frame-ancestors ใช้ใน <meta> ไม่ได้ (ต้องตั้งเป็น HTTP header ซึ่ง GitHub Pages ไม่รองรับ)
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://www.googleapis.com; frame-src https://moneymatev3.firebaseapp.com https://accounts.google.com https://apis.google.com; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#F8F6FB">
   <meta name="description" content="Money Mate V3 — บันทึกการเงิน Diary และ To-do ส่วนตัว">
@@ -19,7 +29,13 @@
         var mode = (t && t.mode) || 'system';
         var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         root.dataset.theme = dark ? 'dark' : 'light';
-        if (t && t.vars) for (var k in t.vars) root.style.setProperty(k, t.vars[k]);
+        /* อนุญาตเฉพาะชื่อตัวแปรสีที่แอปกำหนด และค่าต้องเป็นสี #RRGGBB เท่านั้น */
+        var allowed = /^--(accent|on-accent|accent-ink|mod-(home|wallet|wealth|life)|on-mod-(home|wallet|wealth|life))$/;
+        if (t && t.vars && typeof t.vars === 'object') {
+          for (var k in t.vars) {
+            if (Object.prototype.hasOwnProperty.call(t.vars, k) && allowed.test(k) && /^#[0-9a-fA-F]{6}$/.test(String(t.vars[k]))) root.style.setProperty(k, t.vars[k]);
+          }
+        }
       } catch (e) { root.dataset.theme = 'light'; }
     })();
   </script>
@@ -419,7 +435,7 @@
       <div class="empty"><div class="emo" aria-hidden="true">🌧️</div>
         <h1>โหลดระบบไม่สำเร็จ</h1>
         <p id="screen-error-msg">ไม่สามารถเชื่อมต่อบริการที่จำเป็นได้ โปรดตรวจสอบอินเทอร์เน็ตแล้วลองใหม่</p>
-        <button class="btn" type="button" onclick="location.reload()">ลองใหม่</button>
+        <button class="btn" type="button" data-action="reload">ลองใหม่</button>
       </div>
     </div>
   </div>
@@ -630,7 +646,8 @@
   <div id="loading" class="loading" hidden><div class="spinner" role="status" aria-label="กำลังโหลด"></div></div>
   <input type="file" id="restore-file" accept="application/json,.json" hidden>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <!-- SRI ตรวจแล้ว: sha512 ของไฟล์นี้ตรงกับค่าที่ cdnjs เผยแพร่สำหรับ Chart.js 4.4.1 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script type="module">
     // =====================================================================
     // 01. Firebase imports and configuration
@@ -755,7 +772,18 @@
     const TH_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
     const TH_MONTHS_LONG = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
     const DAYS_PER_PAGE = 10;
+    /** การเติมเงินจากกระเป๋าเข้าเงินออม/การลงทุน: เป็น transfer subtype จึงไม่นับเป็นรายรับ/รายจ่าย */
+    const LINK_KINDS = {
+      savings: { col: 'savings', subtype: 'saving_deposit', entityType: 'saving', label: 'ฝากเงินออม', withdrawLabel: 'ถอนเงินออม', icon: 'piggy', bg: 'var(--mint)', tab: 'savings' },
+      investments: { col: 'investments', subtype: 'investment_deposit', entityType: 'investment', label: 'ลงทุนเพิ่ม', withdrawLabel: 'ถอนการลงทุน', icon: 'chart', bg: 'var(--sky)', tab: 'investments' }
+    };
+    const linkKindOfTx = t => Object.values(LINK_KINDS).find(k => k.subtype === t.subtype) || null;
     const BATCH_LIMIT = 400;
+    /** เพดานจำนวนเงินต่อรายการ (สตางค์) = ฿1,000,000,000 — ผลรวม 10,000 รายการยังอยู่ในช่วง safe integer */
+    const MAX_AMOUNT_SATANG = 100_000_000_000;
+    const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
+    const MAX_BACKUP_RECORDS = 10000;
+    const ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
     const COLOR_INCOME = '#4FBF8F';
     const COLOR_EXPENSE = '#F2937A';
 
@@ -814,6 +842,8 @@
     const fmtMoney = satang => thb.format((Number.isFinite(satang) ? satang : 0) / 100);
     const fmtPct = n => new Intl.NumberFormat('th-TH', { maximumFractionDigits: 1 }).format(n) + '%';
     const isHex = v => /^#[0-9a-f]{6}$/i.test(String(v || ''));
+    /** รับเฉพาะ URL รูปโปรไฟล์ https จาก googleusercontent.com (ตรงกับ CSP img-src) */
+    const safePhotoUrl = u => { try { const x = new URL(u); return x.protocol === 'https:' && /(^|\.)googleusercontent\.com$/.test(x.hostname) ? x.href : ''; } catch { return ''; } };
     const iconKey = key => (ICONS[key] ? key : LEGACY_EMOJI[key] || 'sparkle');
     /** คืน inline SVG ของไอคอน (รองรับ emoji จากข้อมูลเก่าโดยแปลงเป็น SVG) */
     function iconSvg(key, cls = 'i') {
@@ -822,12 +852,24 @@
       return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k][1]}</svg>`;
     }
 
-    /** แปลงข้อความจากฟอร์มเป็นสตางค์ (integer) — คืน NaN เมื่อรูปแบบไม่ถูกต้อง (ไม่เกิน 2 ตำแหน่งทศนิยม) */
-    function toSatang(input) {
+    /**
+     * แปลงข้อความจากฟอร์มเป็นสตางค์ (integer) ด้วยการแยกส่วนจำนวนเต็ม/ทศนิยมเป็นข้อความ ไม่ผ่านทศนิยมลอยตัว
+     * คืน { value, error } โดย error = 'format' (ผิดรูปแบบ/ทศนิยมเกิน 2 ตำแหน่ง) | 'range' (เกินเพดานหรือไม่ใช่ safe integer)
+     */
+    function parseSatang(input) {
       const s = String(input ?? '').replace(/[,\s฿]/g, '');
-      if (!/^-?\d+(\.\d{1,2})?$/.test(s) && !/^-?\.\d{1,2}$/.test(s)) return NaN;
-      return Math.round(Number(s) * 100);
+      const m = /^(-?)(\d*)(?:\.(\d{1,2}))?$/.exec(s);
+      if (!m || (m[2] === '' && m[3] === undefined)) return { value: NaN, error: 'format' };
+      if (m[2].replace(/^0+/, '').length > 13) return { value: NaN, error: 'range' };
+      const abs = Number(m[2] || '0') * 100 + Number((m[3] || '').padEnd(2, '0'));
+      const value = m[1] && abs !== 0 ? -abs : abs;
+      if (!Number.isFinite(value) || !Number.isSafeInteger(value) || Math.abs(value) > MAX_AMOUNT_SATANG) return { value: NaN, error: 'range' };
+      return { value, error: '' };
     }
+    /** สตางค์ (integer) หรือ NaN เมื่อรูปแบบผิด/เกินเพดาน MAX_AMOUNT_SATANG */
+    const toSatang = input => parseSatang(input).value;
+    /** จำนวนเงินที่เก็บในระบบต้องเป็น safe integer สตางค์ และไม่เกินเพดาน */
+    const isValidSatang = v => Number.isSafeInteger(v) && Math.abs(v) <= MAX_AMOUNT_SATANG;
     const satangToInput = s => (Number.isFinite(s) ? (s / 100).toFixed(2) : '');
 
     const bkkFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -1010,21 +1052,34 @@
       async put(col, id, data) { await fb.F.setDoc(this.ref(col, id), toFs(data)); },
       async del(col, id) { await fb.F.deleteDoc(this.ref(col, id)); },
       async putSettings(data) { await fb.F.setDoc(fb.F.doc(fb.db, 'users', state.user.uid, 'settings', 'app'), toFs(data)); },
-      /** ops: [{ op: 'set'|'delete', col, id, data }] — แบ่ง batch ไม่เกิน 400 operations */
-      async runOps(ops, onProgress) {
-        let done = 0;
-        for (let i = 0; i < ops.length; i += BATCH_LIMIT) {
-          const batch = fb.F.writeBatch(fb.db);
-          for (const o of ops.slice(i, i + BATCH_LIMIT)) {
-            const ref = o.col === 'settings' ? fb.F.doc(fb.db, 'users', state.user.uid, 'settings', 'app') : this.ref(o.col, o.id);
-            if (o.op === 'delete') batch.delete(ref); else batch.set(ref, toFs(o.data));
-          }
-          await batch.commit();
-          done = Math.min(ops.length, i + BATCH_LIMIT);
-          onProgress?.(done, ops.length);
+      /** ops: [{ op: 'set'|'delete', col, id, data }] — เขียนใน Write Batch เดียว (atomic: สำเร็จทั้งหมดหรือไม่เปลี่ยนเลย) */
+      async commitAtomic(ops) {
+        if (ops.length > BATCH_LIMIT) throw Object.assign(new Error('too-many-ops'), { code: 'app/too-many-ops' });
+        const batch = fb.F.writeBatch(fb.db);
+        for (const o of ops) {
+          const ref = o.col === 'settings' ? fb.F.doc(fb.db, 'users', state.user.uid, 'settings', 'app') : this.ref(o.col, o.id);
+          if (o.op === 'delete') batch.delete(ref); else batch.set(ref, toFs(o.data));
         }
+        await batch.commit();
       }
     };
+    /**
+     * เขียนแบบแบ่ง batch (ใช้กับ Merge เท่านั้น — ไม่ atomic ข้ามทุก batch)
+     * คืน { done, failed: [{ batch, from, to, error }] } เพื่อแจ้งผู้ใช้ว่า batch ไหนล้มเหลว
+     */
+    async function runOpsChunked(ops, onProgress) {
+      const failed = []; let done = 0;
+      for (let i = 0, b = 1; i < ops.length; i += BATCH_LIMIT, b++) {
+        const chunk = ops.slice(i, i + BATCH_LIMIT);
+        try { await store().commitAtomic(chunk); done += chunk.length; }
+        catch (error) {
+          failed.push({ batch: b, from: i + 1, to: i + chunk.length, error });
+          if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) break;
+        }
+        onProgress?.(Math.min(ops.length, i + chunk.length), ops.length);
+      }
+      return { done, failed };
+    }
     /** โหมดสาธิต: เก็บข้อมูลในหน่วยความจำเท่านั้น หายเมื่อรีเฟรช */
     const memoryDb = { settings: null };
     COLLECTIONS.forEach(c => { memoryDb[c] = new Map(); });
@@ -1039,13 +1094,13 @@
       async put(col, id, data) { memoryDb[col].set(id, clone(data)); },
       async del(col, id) { memoryDb[col].delete(id); },
       async putSettings(data) { memoryDb.settings = clone(data); },
-      async runOps(ops, onProgress) {
+      async commitAtomic(ops) {
+        if (ops.length > BATCH_LIMIT) throw Object.assign(new Error('too-many-ops'), { code: 'app/too-many-ops' });
         ops.forEach(o => {
           if (o.col === 'settings') memoryDb.settings = clone(o.data);
           else if (o.op === 'delete') memoryDb[o.col].delete(o.id);
           else memoryDb[o.col].set(o.id, clone(o.data));
         });
-        onProgress?.(ops.length, ops.length);
       }
     };
     const store = () => (ui.mode === 'demo' ? memoryStore : firestoreStore);
@@ -1075,7 +1130,7 @@
     }
     /** เขียนหลายเอกสารแบบ atomic (batch) แล้วอัปเดต state */
     async function commitOps(ops) {
-      await store().runOps(ops);
+      await store().commitAtomic(ops);
       for (const o of ops) {
         if (o.col === 'settings') state.settings = o.data;
         else if (o.op === 'delete') state[o.col] = state[o.col].filter(x => x.id !== o.id);
@@ -1216,7 +1271,7 @@
       for (const t of list) if (t.type === type) map.set(t.categoryId, (map.get(t.categoryId) || 0) + t.amountSatang);
       return [...map.entries()].map(([id, sum]) => {
         const c = byId('categories', id);
-        return { label: c ? c.name : 'รายการที่ถูกลบ', color: c?.color || '#D9D3E6', sum };
+        return { label: c ? c.name : 'รายการที่ถูกลบ', color: isHex(c?.color) ? c.color : '#D9D3E6', sum };
       }).sort((a, b) => b.sum - a.sum);
     }
     function trendSeries(list) {
@@ -1302,7 +1357,7 @@
         options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${fmtMoney(ctx.parsed)} (${fmtPct(ctx.parsed / total * 100)})` } } } }
       });
       if (total > 0) {
-        wrap.insertAdjacentHTML('beforeend', `<div class="legend-list" aria-hidden="true">${groups.map(g => `<div class="row"><span style="background:${escapeHtml(g.color)}"></span><span class="grow ellipsis">${escapeHtml(g.label)}</span><span class="money">${fmtMoney(g.sum)}</span><span class="muted small num">${fmtPct(g.sum / total * 100)}</span></div>`).join('')}</div>`);
+        wrap.insertAdjacentHTML('beforeend', `<div class="legend-list" aria-hidden="true">${groups.map(g => `<div class="row"><span style="background:${isHex(g.color) ? g.color : '#D9D3E6'}"></span><span class="grow ellipsis">${escapeHtml(g.label)}</span><span class="money">${fmtMoney(g.sum)}</span><span class="muted small num">${fmtPct(g.sum / total * 100)}</span></div>`).join('')}</div>`);
       }
     }
 
@@ -1331,11 +1386,18 @@
           const recv = !!to;
           return { icon: 'users', bg: 'var(--rose)', title: `${recv ? 'รับชำระหนี้' : 'ชำระหนี้'}: ${dn}`, sub: accName((to || from).accountId), sign: recv ? '+' : '−', cls: 'xfer', label: 'ชำระหนี้' };
         }
+        const lk = linkKindOfTx(t);
+        if (lk) {
+          const ent = byId(lk.col, t.linkedEntityId);
+          const out = !!to; // posting บวก = ถอนกลับเข้ากระเป๋า
+          const label = out ? lk.withdrawLabel : lk.label;
+          return { icon: lk.icon, bg: lk.bg, title: `${label}: ${ent ? ent.name : 'รายการที่ถูกลบ'}`, sub: accName((to || from)?.accountId), sign: out ? '← ' : '→ ', cls: 'xfer', label };
+        }
         return { icon: 'transfer', bg: 'var(--sky)', title: 'โอนเงิน', sub: `${accName(from?.accountId)} → ${accName(to?.accountId)}`, sign: '⇄ ', cls: 'xfer', label: 'โอน' };
       }
       const income = t.type === 'income';
       return {
-        icon: cat?.icon || (income ? 'plus' : 'minus'), bg: cat?.color || (income ? 'var(--mint)' : 'var(--peach)'),
+        icon: cat?.icon || (income ? 'plus' : 'minus'), bg: isHex(cat?.color) ? cat.color : (income ? 'var(--mint)' : 'var(--peach)'),
         title: cat ? cat.name : (t.categoryId ? 'รายการที่ถูกลบ' : TX_TYPES[t.type]),
         sub: accName(t.postings[0]?.accountId), sign: income ? '+' : '−', cls: income ? 'pos' : 'neg', label: TX_TYPES[t.type]
       };
@@ -1620,6 +1682,7 @@
           <div class="row between"><b class="money">${fmtMoney(s.currentAmountSatang)}</b><span class="small muted money">/ ${fmtMoney(s.targetAmountSatang)}</span></div>
           <div class="progress" role="progressbar" aria-label="ความคืบหน้า" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(Math.min(100, pct))}"><span style="width:${Math.min(100, pct)}%;--bar:${escapeHtml(isHex(s.color) ? s.color : '#A8E6CF')}"></span></div>
           <div class="small">${fmtPct(pct)}${pct >= 100 ? ' · 🎉 ถึงเป้าแล้ว' : ''}</div>
+          ${contributionHistory('savings', s)}
         </article>`;
       }).join('') + '</div>';
     }
@@ -1636,6 +1699,7 @@
         <div class="row between"><span class="muted small">เงินต้น</span><b class="money">${fmtMoney(x.principalSatang)}</b></div>
         <div class="row between"><span class="muted small">มูลค่าปัจจุบัน</span><b class="money">${Number.isInteger(x.currentValueSatang) ? fmtMoney(x.currentValueSatang) : 'ยังไม่อัปเดต'}</b></div>
         <div class="small muted">อัปเดตเมื่อ ${x.valuedAt ? fmtDateKey(x.valuedAt) : '—'}${x.note ? ' · ' + escapeHtml(x.note) : ''}</div>
+        ${contributionHistory('investments', x)}
       </article>`).join('') + '</div>';
     }
 
@@ -1726,7 +1790,7 @@
       const s = state.settings || DEFAULT_SETTINGS; const u = state.user || {};
       const mc = { ...DEFAULT_SETTINGS.moduleColors, ...(s.moduleColors || {}) };
       return `<div class="card"><div class="row">
-          <div class="avatar" style="width:52px;height:52px" aria-hidden="true">${u.photo ? `<img class="avatar" style="width:52px;height:52px" src="${escapeHtml(u.photo)}" alt="" referrerpolicy="no-referrer">` : escapeHtml((u.name || '?').charAt(0))}</div>
+          <div class="avatar" style="width:52px;height:52px" aria-hidden="true">${safePhotoUrl(u.photo) ?`<img class="avatar" style="width:52px;height:52px" src="${escapeHtml(safePhotoUrl(u.photo))}" alt="" referrerpolicy="no-referrer">` : escapeHtml((u.name || '?').charAt(0))}</div>
           <div class="grow"><b class="ellipsis" style="display:block">${escapeHtml(u.name || '')}</b><span class="small muted ellipsis" style="display:block">${escapeHtml(u.email || '')}</span>
           ${ui.mode === 'demo' ? '<span class="chip yellow">โหมดสาธิต — ข้อมูลไม่ถูกบันทึก</span>' : ''}</div></div></div>
 
@@ -1890,8 +1954,9 @@
     const validTime = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
     function requireAmount(errs, key, raw, { allowZero = false, allowNegative = false, optional = false } = {}) {
       if (optional && String(raw ?? '').trim() === '') return null;
-      const v = toSatang(raw);
+      const { value: v, error } = parseSatang(raw);
       if (String(raw ?? '').trim() === '') errs[key] = 'กรอกจำนวนเงิน';
+      else if (error === 'range') errs[key] = `จำนวนเงินต้องไม่เกิน ${fmtMoney(MAX_AMOUNT_SATANG)}`;
       else if (!Number.isFinite(v)) errs[key] = 'กรอกจำนวนเงินให้ถูกต้อง (ทศนิยมไม่เกิน 2 ตำแหน่ง)';
       else if (!allowNegative && v < 0) errs[key] = 'จำนวนเงินต้องไม่ติดลบ';
       else if (!allowZero && v <= 0) errs[key] = 'จำนวนเงินต้องมากกว่า 0';
@@ -1965,6 +2030,7 @@
     }
     function openTxForm({ tx = null, type = 'expense', toAccountId = '' } = {}) {
       if (tx?.subtype === 'debt_payment') return openDebtPaymentInfo(tx);
+      if (tx && linkKindOfTx(tx)) return openContributionInfo(tx);
       const form = $('#add-sheet form');
       form.reset(); clearErrors(form);
       const t = tx || {};
@@ -2042,6 +2108,102 @@
         ${tx.note ? `<p>${escapeHtml(tx.note)}</p>` : ''}
         <p class="note-box">รายการชำระหนี้ไม่นับเป็นรายรับ/รายจ่าย${d ? ' แก้ไขหรือลบได้ที่ Wealth › หนี้' : ''}</p>
         <div class="sheet-foot">${d ? `<button type="button" class="btn" data-action="goto-debts">ไปที่หนี้</button>` : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
+    }
+
+    // ---- ฝาก/ถอน เงินออมและการลงทุน กับกระเป๋า ----
+    /** ยอดที่ถอนได้สูงสุด: เงินออม = ยอดสะสม, การลงทุน = มูลค่าปัจจุบัน (ถ้ายังไม่อัปเดตใช้เงินต้น) */
+    const withdrawLimit = (col, ent) => (col === 'savings' ? ent.currentAmountSatang || 0
+      : Number.isInteger(ent.currentValueSatang) ? ent.currentValueSatang : ent.principalSatang || 0);
+    /** การเปลี่ยนแปลงของ field ในเงินออม/การลงทุน เมื่อฝาก (in) หรือถอน (out) */
+    function contributionDeltas(col, ent, amount, dir) {
+      const s = dir === 'out' ? -1 : 1;
+      if (col === 'savings') return { currentAmountSatang: s * amount };
+      const cv = Number.isInteger(ent.currentValueSatang) ? ent.currentValueSatang : null;
+      // ถอนการลงทุน: ลดเงินต้นตามสัดส่วนที่ถอนออกจากมูลค่า (ไม่คำนวณกำไร/ขาดทุน)
+      const principalDelta = dir === 'out' && cv ? -Math.min(ent.principalSatang || 0, Math.round((ent.principalSatang || 0) * amount / cv)) : s * amount;
+      return { principalSatang: principalDelta, currentValueSatang: cv === null ? 0 : s * amount };
+    }
+    function applyDeltas(ent, deltas, sign = 1) {
+      const patch = {};
+      for (const [k, d] of Object.entries(deltas)) {
+        if (!d) continue;
+        if (k === 'currentValueSatang' && !Number.isInteger(ent[k])) continue;
+        patch[k] = Math.max(0, (ent[k] || 0) + sign * d);
+      }
+      return patch;
+    }
+    function openContributionForm(col, id, dir = 'in') {
+      const lk = LINK_KINDS[col]; const ent = byId(col, id); if (!ent) return;
+      const out = dir === 'out';
+      const title = out ? lk.withdrawLabel : lk.label;
+      const what = col === 'savings' ? 'ยอดเงินออม' : 'เงินต้นและมูลค่าปัจจุบัน';
+      openModal(`${title}: ${ent.name}`, `<form data-form="contribution" data-col="${col}" data-dir="${dir}" data-id="${escapeHtml(id)}" class="form-grid" novalidate>
+        <p class="small muted">${col === 'savings' ? 'ยอดสะสมปัจจุบัน' : 'มูลค่าปัจจุบัน'} <b class="money">${col === 'savings' || Number.isInteger(ent.currentValueSatang) ? fmtMoney(withdrawLimit(col, ent)) : 'ยังไม่อัปเดต'}</b>${col === 'investments' ? ` · เงินต้น <b class="money">${fmtMoney(ent.principalSatang || 0)}</b>` : ''}</p>
+        ${fld('amount', `จำนวนเงินที่${out ? 'ถอน' : 'ฝาก'} (บาท)`, inp('amount', '', 'inputmode="decimal" class="amount-input"'))}
+        ${fld('accountId', out ? 'รับเข้ากระเป๋า' : 'จ่ายจากกระเป๋า', `<select id="f-accountId" name="accountId">${accountOptions(defaultAccountId(), a => ASSET_TYPES.has(a.type))}</select>`)}
+        <div class="two">${fld('date', 'วันที่', inp('date', todayKey(), 'type="date"'))}${fld('time', 'เวลา', inp('time', timeOf(nowIso()), 'type="time"'))}</div>
+        ${fld('note', 'Note', inp('note', '', `maxlength="200" placeholder="${out ? (col === 'savings' ? 'เช่น ถอนไปใช้จ่าย' : 'เช่น ขาย BTC บางส่วน') : (col === 'savings' ? 'เช่น ออมประจำเดือน' : 'เช่น ซื้อ BTC ผ่าน Binance')}"`))}
+        <p class="small muted">${out
+          ? `ยอดในกระเป๋าจะเพิ่มขึ้น และ${col === 'savings' ? 'ยอดเงินออมจะลดลงเท่ากัน' : 'มูลค่าปัจจุบันจะลดลงเท่ากัน ส่วนเงินต้นลดลงตามสัดส่วน'} · ไม่นับเป็นรายรับ`
+          : `ยอดในกระเป๋าจะลดลง และ${what}จะเพิ่มขึ้นเท่ากัน · ไม่นับเป็นรายจ่าย`}</p>
+        ${formFoot()}</form>`);
+    }
+    async function submitContribution(form) {
+      const col = form.dataset.col; const dir = form.dataset.dir === 'out' ? 'out' : 'in';
+      const lk = LINK_KINDS[col]; const ent = byId(col, form.dataset.id); if (!ent) return;
+      const el = form.elements; const errs = {};
+      const amount = requireAmount(errs, 'amount', el.amount.value);
+      if (dir === 'out' && Number.isFinite(amount) && amount > withdrawLimit(col, ent)) errs.amount = `ถอนได้ไม่เกิน ${fmtMoney(withdrawLimit(col, ent))}`;
+      if (!el.accountId.value) errs.accountId = 'เลือกกระเป๋า';
+      if (!validDate(el.date.value)) errs.date = 'วันที่ไม่ถูกต้อง';
+      if (!validTime(el.time.value)) errs.time = 'เวลาไม่ถูกต้อง';
+      if (showErrors(form, errs)) return;
+      await withBusy(form, async () => {
+        const txId = newId(); const at = isoFromLocal(el.date.value, el.time.value); const note = el.note.value.trim();
+        const deltas = contributionDeltas(col, ent, amount, dir);
+        const contributions = [...(ent.contributions || []), { id: txId, direction: dir, amountSatang: amount, deltas, at, accountId: el.accountId.value, note }];
+        await commitOps([
+          { op: 'set', col: 'transactions', id: txId, data: withMeta({
+            type: 'transfer', subtype: lk.subtype, amountSatang: amount, categoryId: null, occurredAt: at, note,
+            advanceType: 'none', linkedEntityType: lk.entityType, linkedEntityId: ent.id,
+            postings: [{ accountId: el.accountId.value, deltaSatang: dir === 'out' ? amount : -amount }] }) },
+          { op: 'set', col, id: ent.id, data: withMeta({ ...stripId(ent), ...applyDeltas(ent, deltas), contributions }, ent) }
+        ]);
+        await afterSave(`${dir === 'out' ? lk.withdrawLabel : lk.label}แล้ว`);
+      });
+    }
+    async function deleteContribution(col, entId, cid) {
+      const ent = byId(col, entId); if (!ent) return;
+      const c = (ent.contributions || []).find(x => x.id === cid); if (!c) return;
+      const out = c.direction === 'out';
+      if (!(await confirmDialog(out ? 'ลบรายการถอนนี้? เงินจะออกจากกระเป๋ากลับไปที่รายการเดิม' : 'ลบรายการฝากนี้? เงินจะกลับเข้ากระเป๋า และยอดจะลดลงเท่ากัน'))) return;
+      // ย้อนกลับด้วย deltas ที่บันทึกไว้ (รายการเก่าที่ไม่มี deltas คือการฝาก)
+      const deltas = c.deltas || contributionDeltas(col, { ...ent, currentValueSatang: Number.isInteger(ent.currentValueSatang) ? ent.currentValueSatang : null }, c.amountSatang, 'in');
+      const ops = [{ op: 'set', col, id: ent.id, data: withMeta({ ...stripId(ent), ...applyDeltas(ent, deltas, -1), contributions: ent.contributions.filter(x => x.id !== cid) }, ent) }];
+      if (byId('transactions', cid)) ops.push({ op: 'delete', col: 'transactions', id: cid });
+      try { await commitOps(ops); closeAllModals(); renderAll(); toast('ลบรายการแล้ว'); } catch (e) { handleDataError(e); }
+    }
+    function contributionHistory(col, ent) {
+      const list = [...(ent.contributions || [])].sort((a, b) => (a.at < b.at ? 1 : -1));
+      const open = ui.openDebtHistory.has(ent.id);
+      const canWithdraw = withdrawLimit(col, ent) > 0;
+      return `<div class="row" style="flex-wrap:wrap"><button type="button" class="btn sm" data-action="contrib-new" data-col="${col}" data-id="${escapeHtml(ent.id)}">+ เพิ่มเงิน</button>
+          ${canWithdraw ? `<button type="button" class="btn sm outline" data-action="contrib-withdraw" data-col="${col}" data-id="${escapeHtml(ent.id)}">− ถอน</button>` : ''}
+          <button type="button" class="btn sm ghost" data-action="debt-history" data-id="${escapeHtml(ent.id)}" aria-expanded="${open}">ประวัติ (${list.length})</button></div>
+        ${open ? `<div class="list">${list.length ? list.map(c => `<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)">
+            <span class="grow"><span class="chip ${c.direction === 'out' ? 'peach' : 'mint'}">${c.direction === 'out' ? 'ถอน' : 'ฝาก'}</span> ${fmtIsoDate(c.at)} · ${escapeHtml(accName(c.accountId))}${c.note ? ' · ' + escapeHtml(c.note) : ''}</span>
+            <b class="money">${c.direction === 'out' ? '−' : '+'}${fmtMoney(c.amountSatang)}</b>
+            <button type="button" class="link-btn" data-action="contrib-delete" data-col="${col}" data-id="${escapeHtml(ent.id)}" data-cid="${escapeHtml(c.id)}" aria-label="ลบรายการ${c.direction === 'out' ? 'ถอน' : 'ฝาก'}">ลบ</button></div>`).join('') : '<p class="small muted">ยังไม่มีการฝาก/ถอนกับกระเป๋า</p>'}</div>` : ''}`;
+    }
+    function openContributionInfo(tx) {
+      const lk = linkKindOfTx(tx); const ent = byId(lk.col, tx.linkedEntityId); const disp = txDisplay(tx);
+      openModal(disp.label, `<div class="stack">
+        <p><b>${escapeHtml(disp.title)}</b></p>
+        <p class="money" style="font-size:22px;font-weight:700">${fmtMoney(tx.amountSatang)}</p>
+        <p class="small muted">${fmtIsoDate(tx.occurredAt, { dateStyle: 'long' })} ${timeOf(tx.occurredAt)} · ${disp.sign.trim() === '←' ? 'เข้า' : 'จาก'} ${escapeHtml(disp.sub)}</p>
+        ${tx.note ? `<p>${escapeHtml(tx.note)}</p>` : ''}
+        <p class="note-box">รายการนี้ไม่นับเป็นรายรับ/รายจ่าย${ent ? ` ลบได้ที่ Wealth › ${lk.col === 'savings' ? 'เงินออม' : 'ลงทุน'} › ประวัติ` : ''}</p>
+        <div class="sheet-foot">${ent ? `<button type="button" class="btn" data-action="goto-wealth-tab" data-tab="${lk.tab}">ไปที่${lk.col === 'savings' ? 'เงินออม' : 'การลงทุน'}</button>` : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
     }
 
     /** รายการสำรองจ่าย/รับคืน ตามช่วงเวลาและบัญชีเดียวกับการ์ดใน Wallet */
@@ -2190,7 +2352,7 @@
       openModal(recv ? `รับชำระจาก ${d.name}` : `ชำระให้ ${d.name}`, `<form data-form="payment" data-id="${escapeHtml(debtId)}" class="form-grid" novalidate>
         <p class="small muted">คงเหลือ <b class="money">${fmtMoney(debtRemaining(d))}</b></p>
         ${fld('amount', 'จำนวนเงิน (บาท)', inp('amount', '', 'inputmode="decimal" class="amount-input"'))}
-        ${fld('accountId', recv ? 'รับเข้าบัญชี' : 'จ่ายจากบัญชี', `<select id="f-accountId" name="accountId">${accountOptions('', a => ASSET_TYPES.has(a.type))}</select>`)}
+        ${fld('accountId', recv ? 'รับเข้าบัญชี' : 'จ่ายจากบัญชี', `<select id="f-accountId" name="accountId">${accountOptions(defaultAccountId(), a => ASSET_TYPES.has(a.type))}</select>`)}
         <div class="two">${fld('date', 'วันที่', inp('date', todayKey(), 'type="date"'))}${fld('time', 'เวลา', inp('time', timeOf(nowIso()), 'type="time"'))}</div>
         ${fld('note', 'Note', inp('note', '', 'maxlength="200"'))}
         <p class="small muted">รายการนี้จะแสดงในประวัติธุรกรรมเป็น "ชำระหนี้" และไม่นับเป็นรายรับ/รายจ่าย</p>
@@ -2390,20 +2552,199 @@
       try { await saveSettings({ lastExportAt: nowIso() }); } catch (e) { if (!silent) handleDataError(e); }
       if (!silent) { toast('ดาวน์โหลด backup แล้ว'); if (state.activeSection === 'more') renderMore(); }
     }
-    function validateBackup(obj) {
-      if (!obj || typeof obj !== 'object' || obj.app !== APP_NAME) return 'ไฟล์นี้ไม่ใช่ backup ของ Money Mate V3';
-      if (obj.schemaVersion !== SCHEMA_VERSION) return `ไม่รองรับ schema version ${escapeHtml(obj.schemaVersion)}`;
-      if (!obj.data || typeof obj.data !== 'object') return 'โครงสร้างไฟล์ไม่ถูกต้อง';
-      for (const c of COLLECTIONS) {
-        const v = obj.data[c];
-        if (v != null && (!Array.isArray(v) || v.some(x => !x || typeof x !== 'object'))) return `ข้อมูล ${c} ไม่ถูกต้อง`;
+    // ---- Strict backup validation: ตรวจชนิด/ช่วงค่าทุก field และตัด field ที่ไม่อยู่ใน schema ----
+    const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const isIsoTs = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v));
+    /** ตัวตรวจ field: คืนค่าที่ทำความสะอาดแล้ว หรือ throw ข้อความภาษาไทย */
+    const V = {
+      str: (max, required = false) => (v, f) => {
+        if (v == null || v === '') { if (required) throw `${f} ต้องไม่ว่าง`; return ''; }
+        if (typeof v !== 'string') throw `${f} ต้องเป็นข้อความ`;
+        if (v.length > max) throw `${f} ยาวเกิน ${max} ตัวอักษร`;
+        return v;
+      },
+      money: ({ nullable = false, min = -MAX_AMOUNT_SATANG } = {}) => (v, f) => {
+        if (v == null && nullable) return null;
+        if (!isValidSatang(v)) throw `${f} ต้องเป็นจำนวนเงินหน่วยสตางค์ (integer) ไม่เกิน ${MAX_AMOUNT_SATANG}`;
+        if (v < min) throw min > 0 ? `${f} ต้องมากกว่า 0` : `${f} ต้องไม่ติดลบ`;
+        return v;
+      },
+      int: (lo, hi, nullable = false) => (v, f) => {
+        if (v == null && nullable) return null;
+        if (!Number.isSafeInteger(v) || v < lo || v > hi) throw `${f} ต้องเป็นจำนวนเต็ม ${lo}–${hi}`;
+        return v;
+      },
+      num: (lo, hi, nullable = false) => (v, f) => {
+        if (v == null && nullable) return null;
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) throw `${f} ต้องเป็นตัวเลข ${lo}–${hi}`;
+        return v;
+      },
+      bool: () => (v, f) => { if (v == null) return false; if (typeof v !== 'boolean') throw `${f} ต้องเป็น true/false`; return v; },
+      oneOf: (vals, def) => (v, f) => {
+        if (v == null && def !== undefined) return def;
+        if (!vals.includes(v)) throw `${f} ต้องเป็นค่าใดค่าหนึ่งใน ${vals.map(String).join(', ')}`;
+        return v;
+      },
+      date: (nullable = false) => (v, f) => {
+        if ((v == null || v === '') && nullable) return null;
+        if (typeof v !== 'string' || !validDate(v)) throw `${f} ต้องเป็นวันที่รูปแบบ YYYY-MM-DD`;
+        return v;
+      },
+      time: () => (v, f) => { if (typeof v !== 'string' || !validTime(v)) throw `${f} ต้องเป็นเวลารูปแบบ HH:mm`; return v; },
+      iso: (nullable = false) => (v, f) => {
+        if (v == null && nullable) return null;
+        if (!isIsoTs(v)) throw `${f} ต้องเป็นวันเวลา ISO 8601`;
+        return new Date(v).toISOString();
+      },
+      id: (nullable = false) => (v, f) => {
+        if ((v == null || v === '') && nullable) return null;
+        if (typeof v !== 'string' || !ID_RE.test(v)) throw `${f} ต้องเป็น ID รูปแบบ A-Z a-z 0-9 _ - (1–100 ตัว)`;
+        return v;
+      },
+      color: () => (v, f) => { if (!isHex(v)) throw `${f} ต้องเป็นสีรูปแบบ #RRGGBB`; return v; },
+      list: (item, max) => (v, f) => {
+        if (v == null) return [];
+        if (!Array.isArray(v)) throw `${f} ต้องเป็น array`;
+        if (v.length > max) throw `${f} มีได้ไม่เกิน ${max} รายการ`;
+        return v.map((x, i) => item(x, `${f}[${i}]`));
+      },
+      obj: schema => (v, f) => {
+        if (!isPlainObject(v)) throw `${f} ต้องเป็น object`;
+        const out = {};
+        for (const [k, check] of Object.entries(schema)) out[k] = check(v[k], `${f}.${k}`);
+        return out;
       }
-      return '';
+    };
+    const META_SCHEMA = { createdAt: V.iso(true), updatedAt: V.iso(true) };
+    const TAGS = V.list(V.str(50, true), 30);
+    const CONTRIBUTION = V.obj({
+      id: V.id(), direction: V.oneOf(['in', 'out'], 'in'), amountSatang: V.money({ min: 1 }), at: V.iso(), accountId: V.id(), note: V.str(1000),
+      deltas: (v, f) => (v == null ? undefined : V.obj({ currentAmountSatang: V.money({ nullable: true }), principalSatang: V.money({ nullable: true }), currentValueSatang: V.money({ nullable: true }) })(v, f))
+    });
+    const BACKUP_SCHEMAS = {
+      accounts: {
+        name: V.str(100, true), type: V.oneOf(['cash', 'bank', 'ewallet', 'credit_card']), openingSignedBalanceSatang: V.money(),
+        color: V.color(), icon: V.str(40), isArchived: V.bool(), bankName: V.str(100),
+        creditLimitSatang: V.money({ nullable: true, min: 0 }), dueDay: V.int(1, 31, true), minimumPaymentPercent: V.num(0, 100, true),
+        manualMinimumPaymentSatang: V.money({ nullable: true, min: 0 })
+      },
+      transactions: {
+        type: V.oneOf(['income', 'expense', 'transfer']), subtype: V.oneOf(['normal', 'debt_payment', 'saving_deposit', 'investment_deposit'], 'normal'),
+        amountSatang: V.money({ min: 1 }), categoryId: V.id(true), occurredAt: V.iso(), note: V.str(1000),
+        advanceType: V.oneOf(['none', 'paid', 'reimbursed'], 'none'), linkedAdvanceIds: V.list(V.id(), 1000),
+        linkedEntityType: V.oneOf(['debt', 'saving', 'investment', null], null), linkedEntityId: V.id(true),
+        postings: V.list(V.obj({ accountId: V.id(), deltaSatang: V.money() }), 2)
+      },
+      categories: { name: V.str(100, true), type: V.oneOf(['income', 'expense']), icon: V.str(40), color: V.color(), sortOrder: V.int(0, 100000), isArchived: V.bool() },
+      debts: {
+        direction: V.oneOf(['payable', 'receivable']), name: V.str(100, true), initialAmountSatang: V.money({ min: 1 }),
+        startDate: V.date(), dueDate: V.date(true), note: V.str(1000), status: V.oneOf(['active', 'paid'], 'active'),
+        payments: V.list(V.obj({ id: V.id(), amountSatang: V.money({ min: 1 }), paidAt: V.iso(), accountId: V.id(), note: V.str(1000) }), 1000)
+      },
+      savings: {
+        name: V.str(100, true), targetAmountSatang: V.money({ min: 0 }), currentAmountSatang: V.money({ min: 0 }), targetDate: V.date(true),
+        color: V.color(), icon: V.str(40), contributions: V.list(CONTRIBUTION, 2000)
+      },
+      investments: {
+        name: V.str(100, true), type: V.oneOf(['stock', 'fund', 'gold', 'crypto', 'other']), principalSatang: V.money({ min: 0 }),
+        currentValueSatang: V.money({ nullable: true, min: 0 }), valuedAt: V.date(), note: V.str(1000), contributions: V.list(CONTRIBUTION, 2000)
+      },
+      diary: { entryDate: V.date(), entryTime: V.time(), title: V.str(200), content: V.str(20000), mood: V.oneOf(Object.keys(MOODS)), tags: TAGS },
+      tasks: {
+        title: V.str(200, true), description: V.str(5000), status: V.oneOf(['todo', 'doing', 'done']), priority: V.oneOf(['low', 'medium', 'high']),
+        dueDate: V.date(true), tags: TAGS, completedAt: V.iso(true)
+      }
+    };
+    const SETTINGS_SCHEMA = {
+      themeMode: V.oneOf(['light', 'dark', 'system'], 'system'), accentColor: V.color(),
+      moduleColors: V.obj({ home: V.color(), wallet: V.color(), wealth: V.color(), life: V.color() }),
+      defaultMinimumPaymentPercent: V.num(0, 100), defaultAccountId: V.id(true), lastExportAt: V.iso(true)
+    };
+    /** ตรวจความสอดคล้องของ postings กับประเภทรายการ เพื่อไม่ให้ยอดบัญชีเพี้ยน */
+    function checkPostings(t) {
+      const p = t.postings;
+      if (!p.length) throw 'postings ต้องมีอย่างน้อย 1 รายการ';
+      if (p.some(x => Math.abs(x.deltaSatang) !== t.amountSatang)) throw 'postings.deltaSatang ต้องเท่ากับ ±amountSatang';
+      if (t.type === 'income' && !(p.length === 1 && p[0].deltaSatang > 0)) throw 'รายรับต้องมี posting เดียวที่เป็นค่าบวก';
+      if (t.type === 'expense' && !(p.length === 1 && p[0].deltaSatang < 0)) throw 'รายจ่ายต้องมี posting เดียวที่เป็นค่าลบ';
+      if (t.type === 'transfer' && t.subtype === 'normal' && !(p.length === 2 && p[0].deltaSatang + p[1].deltaSatang === 0 && p[0].accountId !== p[1].accountId)) throw 'การโอนต้องมี 2 postings ต่างบัญชีที่รวมกันเป็น 0';
+      if (t.type === 'transfer' && t.subtype !== 'normal' && p.length !== 1) throw 'รายการชำระหนี้/ฝากถอนต้องมี posting เดียว';
+      if (t.type !== 'transfer' && t.subtype !== 'normal') throw 'subtype ใช้ได้กับการโอนเท่านั้น';
     }
-    function openRestore(obj) {
-      const counts = COLLECTIONS.map(c => `<div class="row between"><span>${c}</span><b class="num">${(obj.data[c] || []).length.toLocaleString('th-TH')}</b></div>`).join('');
+    /**
+     * ตรวจไฟล์ backup ทั้งไฟล์ก่อนเขียนใดๆ — คืน { errors: string[], clean } โดย clean มีเฉพาะ field ใน schema
+     * ถ้ามี error แม้แต่ record เดียว ห้ามนำไปเขียน Firestore
+     */
+    function validateBackup(obj) {
+      const errors = [];
+      const add = msg => { if (errors.length < 20) errors.push(msg); };
+      if (!isPlainObject(obj) || obj.app !== APP_NAME) return { errors: ['ไฟล์นี้ไม่ใช่ backup ของ Money Mate V3'] };
+      if (obj.schemaVersion !== SCHEMA_VERSION) return { errors: [`ไม่รองรับ schema version ${String(obj.schemaVersion).slice(0, 20)}`] };
+      if (!isPlainObject(obj.data)) return { errors: ['โครงสร้างไฟล์ไม่ถูกต้อง: ไม่มี data'] };
+      if (obj.exportedAt != null && !isIsoTs(obj.exportedAt)) add('exportedAt ต้องเป็นวันเวลา ISO 8601');
+      const total = COLLECTIONS.reduce((s, c) => s + (Array.isArray(obj.data[c]) ? obj.data[c].length : 0), 0);
+      if (total > MAX_BACKUP_RECORDS) return { errors: [`มีข้อมูล ${total.toLocaleString('th-TH')} รายการ เกินขีดจำกัด ${MAX_BACKUP_RECORDS.toLocaleString('th-TH')} รายการ`] };
+      const clean = {};
+      for (const c of COLLECTIONS) {
+        const arr = obj.data[c] ?? [];
+        if (!Array.isArray(arr)) { add(`${c}: ต้องเป็น array`); continue; }
+        const seen = new Set();
+        clean[c] = arr.map((raw, i) => {
+          const where = `${c} ลำดับที่ ${i + 1}`;
+          try {
+            if (!isPlainObject(raw)) throw 'ต้องเป็น object';
+            const id = V.id()(raw.id, 'id');
+            if (seen.has(id)) throw `id "${id}" ซ้ำกับรายการก่อนหน้า`;
+            seen.add(id);
+            const rec = { id };
+            for (const [k, check] of Object.entries({ ...BACKUP_SCHEMAS[c], ...META_SCHEMA })) {
+              const v = check(raw[k], k);
+              if (v !== undefined) rec[k] = v;
+            }
+            if (c === 'transactions') checkPostings(rec);
+            return rec;
+          } catch (msg) { add(`${where}: ${typeof msg === 'string' ? msg : 'ข้อมูลไม่ถูกต้อง'}`); return null; }
+        });
+      }
+      const s = obj.data.settings;
+      if (s != null && !(isPlainObject(s) && Object.keys(s).length === 0)) {
+        try {
+          if (!isPlainObject(s)) throw 'ต้องเป็น object';
+          clean.settings = {};
+          for (const [k, check] of Object.entries({ ...SETTINGS_SCHEMA, ...META_SCHEMA })) {
+            const v = check(s[k] ?? (k in DEFAULT_SETTINGS ? DEFAULT_SETTINGS[k] : undefined), k);
+            if (v !== undefined) clean.settings[k] = v;
+          }
+        } catch (msg) { add(`settings: ${typeof msg === 'string' ? msg : 'ข้อมูลไม่ถูกต้อง'}`); }
+      }
+      return { errors, clean, exportedAt: isIsoTs(obj.exportedAt) ? obj.exportedAt : null };
+    }
+    function showRestoreErrors(errors) {
+      openModal('ไฟล์ backup ไม่ผ่านการตรวจสอบ', `<div class="stack">
+        <p class="inline-error" role="alert">ยังไม่ได้แก้ไขข้อมูลใดๆ ในระบบ — แก้ไฟล์แล้วลองใหม่</p>
+        <ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px">${errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
+        ${errors.length >= 20 ? '<p class="small muted">แสดง 20 ข้อผิดพลาดแรก</p>' : ''}</div>`);
+    }
+    /** คีย์สำหรับนำไปเขียน: clean records + meta ที่จำเป็น */
+    function restoreDoc(rec) {
+      const data = stripId(rec);
+      return { ...data, createdAt: data.createdAt || nowIso(), updatedAt: data.updatedAt || nowIso(), schemaVersion: SCHEMA_VERSION };
+    }
+    function buildRestoreOps(v, mode) {
+      const ops = [];
+      const incoming = new Map(COLLECTIONS.map(c => [c, new Set(v.clean[c].map(r => r.id))]));
+      // Replace: ลบเอกสารเดิมที่ไม่มีในไฟล์ (เอกสารที่ id ตรงกันจะถูก set ทับอยู่แล้ว)
+      if (mode === 'replace') COLLECTIONS.forEach(c => state[c].forEach(x => { if (!incoming.get(c).has(x.id)) ops.push({ op: 'delete', col: c, id: x.id }); }));
+      COLLECTIONS.forEach(c => v.clean[c].forEach(r => ops.push({ op: 'set', col: c, id: r.id, data: restoreDoc(r) })));
+      if (v.clean.settings) ops.push({ op: 'set', col: 'settings', data: { ...v.clean.settings, createdAt: v.clean.settings.createdAt || nowIso(), updatedAt: nowIso(), schemaVersion: SCHEMA_VERSION } });
+      return ops;
+    }
+    function openRestore(v) {
+      const counts = COLLECTIONS.map(c => `<div class="row between"><span>${c}</span><b class="num">${v.clean[c].length.toLocaleString('th-TH')}</b></div>`).join('');
+      const replaceOps = buildRestoreOps(v, 'replace').length;
       openModal('Restore ข้อมูล', `<form data-form="restore" class="form-grid" novalidate>
-        <p class="small muted">ไฟล์ export เมื่อ ${obj.exportedAt ? escapeHtml(fmtIsoDate(obj.exportedAt, { dateStyle: 'medium' })) : '—'}</p>
+        <p class="small muted">ไฟล์ export เมื่อ ${v.exportedAt ? escapeHtml(fmtIsoDate(v.exportedAt, { dateStyle: 'medium' })) : '—'} · ผ่านการตรวจสอบแล้ว</p>
+        <p class="small muted">Replace ต้องใช้ ${replaceOps.toLocaleString('th-TH')} operations (สูงสุด ${BATCH_LIMIT} เพื่อให้ทำได้ในครั้งเดียวแบบ atomic)</p>
         <div class="card" style="box-shadow:none;background:var(--surface-2)">${counts}</div>
         <fieldset class="field" style="border:0;padding:0;margin:0"><legend class="lbl">วิธี Restore</legend>
           <label class="check"><input type="radio" name="mode" value="merge" checked> Merge — เพิ่ม/ทับรายการที่ id ตรงกัน</label>
@@ -2412,41 +2753,55 @@
           <small class="hint">ระบบจะดาวน์โหลด backup ปัจจุบันให้อัตโนมัติก่อน Replace</small></div>
         <div id="restore-progress" hidden><div class="progress" role="progressbar" aria-label="ความคืบหน้า restore" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span style="width:0%"></span></div><p class="small muted" id="restore-progress-text"></p></div>
         <div class="sheet-foot"><button type="submit" class="btn">เริ่ม Restore</button></div></form>`);
-      $('#modal form[data-form=restore]')._backup = obj;
+      $('#modal form[data-form=restore]')._backup = v;
     }
     async function submitRestore(form) {
-      const obj = form._backup; const mode = form.elements.mode.value;
+      const v = form._backup; const mode = form.elements.mode.value;
       if (mode === 'replace' && form.elements.confirm.value.trim() !== 'RESTORE') { showErrors(form, { confirm: 'พิมพ์คำว่า RESTORE ให้ถูกต้อง' }); return; }
       clearErrors(form);
+      // สร้าง operations ทั้งหมดให้เสร็จก่อนเขียน และตรวจขนาดของ Replace ก่อนแตะข้อมูลใดๆ
+      const ops = buildRestoreOps(v, mode);
+      if (mode === 'replace' && ops.length > BATCH_LIMIT) {
+        showErrors(form, { confirm: `ไฟล์มีข้อมูลมากเกินกว่าจะ Replace อย่างปลอดภัย (${ops.length.toLocaleString('th-TH')} operations เกินขีดจำกัด ${BATCH_LIMIT}) — ยังไม่ได้ลบหรือเขียนข้อมูลใดๆ แนะนำให้ใช้ Merge แทน` });
+        return;
+      }
       await withBusy(form, async () => {
         const prog = $('#restore-progress', form); prog.hidden = false;
         const bar = $('.progress', prog), barFill = $('span', bar), txt = $('#restore-progress-text', form);
-        const setProg = (d, n) => { const p = n ? Math.round(d / n * 100) : 100; barFill.style.width = p + '%'; bar.setAttribute('aria-valuenow', p); txt.textContent = `${d.toLocaleString('th-TH')} / ${n.toLocaleString('th-TH')} รายการ`; };
-        try {
-          if (mode === 'replace') await exportJSON({ silent: true });
-          const ops = [];
-          if (mode === 'replace') COLLECTIONS.forEach(c => state[c].forEach(x => ops.push({ op: 'delete', col: c, id: x.id })));
-          for (const c of COLLECTIONS) {
-            for (const raw of obj.data[c] || []) {
-              const id = typeof raw.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(raw.id) ? raw.id : newId();
-              const data = stripId(raw);
-              ops.push({ op: 'set', col: c, id, data: { ...data, createdAt: data.createdAt || nowIso(), updatedAt: data.updatedAt || nowIso(), schemaVersion: SCHEMA_VERSION } });
-            }
-          }
-          if (obj.data.settings && typeof obj.data.settings === 'object' && Object.keys(obj.data.settings).length) {
-            ops.push({ op: 'set', col: 'settings', data: { ...DEFAULT_SETTINGS, ...obj.data.settings, schemaVersion: SCHEMA_VERSION, updatedAt: nowIso(), createdAt: obj.data.settings.createdAt || nowIso() } });
-          }
-          setProg(0, ops.length);
-          await store().runOps(ops, setProg);
-          txt.textContent = `สำเร็จ ${ops.length.toLocaleString('th-TH')} operations — กำลังโหลดข้อมูลใหม่`;
+        const setProg = (d, n, label = '') => { const p = n ? Math.round(d / n * 100) : 100; barFill.style.width = p + '%'; bar.setAttribute('aria-valuenow', p); txt.textContent = `${label}${d.toLocaleString('th-TH')} / ${n.toLocaleString('th-TH')} operations`; };
+        const finish = async msg => {
           form.dataset.busy = ''; form.closest('.modal').dataset.busy = '';
           closeTopModal(true);
           await loadAllData();
-          toast('Restore สำเร็จ');
-        } catch (e) {
-          txt.textContent = 'Restore ล้มเหลว: ' + errorText(e) + ' (ข้อมูลบางส่วนอาจถูกเขียนแล้ว โปรดตรวจสอบหรือ Restore ซ้ำ)';
-          throw e;
+          toast(msg);
+        };
+        if (mode === 'replace') {
+          // 1) ดาวน์โหลด backup ปัจจุบันก่อน — ถ้าไม่สำเร็จห้ามเริ่มลบ
+          txt.textContent = 'กำลังดาวน์โหลด backup ปัจจุบัน…';
+          try { download(`money-mate-backup-${fileDate()}.json`, JSON.stringify(buildBackup(), null, 2), 'application/json'); }
+          catch { txt.textContent = 'ดาวน์โหลด backup ปัจจุบันไม่สำเร็จ — ยกเลิก Replace โดยยังไม่ได้เปลี่ยนข้อมูลใดๆ'; return; }
+          // 2) เขียนทั้งหมดใน Write Batch เดียว: สำเร็จทั้งหมด หรือไม่เปลี่ยนเลย
+          setProg(0, ops.length, 'กำลัง Replace แบบ atomic: ');
+          try { await store().commitAtomic(ops); }
+          catch (e) {
+            txt.textContent = `Replace ล้มเหลว: ${errorText(e)} — ข้อมูลเดิมไม่ถูกเปลี่ยน (ทำงานแบบ atomic)`;
+            handleDataError(e); return;
+          }
+          setProg(ops.length, ops.length, 'สำเร็จ ');
+          await finish('Replace สำเร็จ');
+          return;
         }
+        // Merge: แบ่ง batch ได้ และรายงาน batch ที่ล้มเหลว
+        setProg(0, ops.length, 'กำลัง Merge: ');
+        const { done, failed } = await runOpsChunked(ops, (d, n) => setProg(d, n, 'กำลัง Merge: '));
+        if (failed.length) {
+          const detail = failed.map(f => `batch ${f.batch} (operations ${f.from}–${f.to}): ${errorText(f.error)}`).join(' · ');
+          txt.textContent = `Merge สำเร็จบางส่วน ${done.toLocaleString('th-TH')} / ${ops.length.toLocaleString('th-TH')} operations — ล้มเหลว ${failed.length} batch: ${detail} · กด Restore แบบ Merge ซ้ำได้อย่างปลอดภัย`;
+          form.dataset.busy = ''; form.closest('.modal').dataset.busy = '';
+          await loadAllData();
+          return;
+        }
+        await finish(`Merge สำเร็จ ${ops.length.toLocaleString('th-TH')} operations`);
       });
     }
     const csvCell = v => {
@@ -2465,8 +2820,12 @@
         else if (t.subtype === 'debt_payment') {
           typeLabel = 'ชำระหนี้'; const dn = byId('debts', t.linkedEntityId)?.name || 'รายการที่ถูกลบ';
           if (pos) { from = dn; to = accName(pos.accountId); } else { from = accName(neg?.accountId); to = dn; }
+        } else if (linkKindOfTx(t)) {
+          const lk = linkKindOfTx(t); const en = byId(lk.col, t.linkedEntityId)?.name || 'รายการที่ถูกลบ';
+          if (pos) { typeLabel = lk.withdrawLabel; from = en; to = accName(pos.accountId); }
+          else { typeLabel = lk.label; from = accName(neg?.accountId); to = en; }
         } else { from = accName(neg?.accountId); to = accName(pos?.accountId); }
-        const cat = t.categoryId ? (byId('categories', t.categoryId)?.name || 'รายการที่ถูกลบ') : '';
+        const cat =t.categoryId ? (byId('categories', t.categoryId)?.name || 'รายการที่ถูกลบ') : '';
         const adv = t.advanceType === 'paid' ? 'สำรองจ่าย' : t.advanceType === 'reimbursed' ? 'รับคืนสำรองจ่าย' : '';
         rows.push([dayKeyOf(t.occurredAt), timeOf(t.occurredAt), typeLabel, cat, from, to, (t.amountSatang / 100).toFixed(2), adv, t.note || '']);
       }
@@ -2488,7 +2847,8 @@
       'tx-delete': () => { const id = $('#add-sheet form').elements.id.value; if (id) deleteTx(id); },
       'tx-delete-id': el => deleteTx(el.dataset.id),
       'tx-more': () => loadMoreDays(),
-      'goto-todo': () => { ui.moreTab = 'todo'; ui.todoTab = 'open'; navigate('more'); },
+      'reload': () => location.reload(),
+      'goto-todo':() => { ui.moreTab = 'todo'; ui.todoTab = 'open'; navigate('more'); },
       'goto-debts':() => { closeAllModals(); ui.wealthTab = 'debts'; navigate('wealth'); },
       'toggle-archived': () => { ui.showArchived = !ui.showArchived; state.activeSection === 'wealth' ? renderWealth() : renderWallet(); },
       'account-new': () => { closeAllModals(); openAccountForm(); },
@@ -2506,10 +2866,14 @@
       'payment-delete': el => deletePayment(el.dataset.id, el.dataset.pid),
       'saving-new': () => openSavingForm(),
       'saving-edit': el => openSavingForm(el.dataset.id),
-      'saving-delete': el => simpleDelete('savings', el.dataset.id, 'ลบเป้าหมายการออมนี้?'),
+      'saving-delete': el => simpleDelete('savings', el.dataset.id, 'ลบเป้าหมายการออมนี้? รายการเติมเงินที่บันทึกแล้วจะยังอยู่ในประวัติธุรกรรม'),
+      'contrib-new': el => openContributionForm(el.dataset.col, el.dataset.id),
+      'contrib-withdraw': el => openContributionForm(el.dataset.col, el.dataset.id, 'out'),
+      'contrib-delete': el => deleteContribution(el.dataset.col, el.dataset.id, el.dataset.cid),
+      'goto-wealth-tab': el => { closeAllModals(); ui.wealthTab = el.dataset.tab; navigate('wealth'); },
       'invest-new': () => openInvestForm(),
       'invest-edit': el => openInvestForm(el.dataset.id),
-      'invest-delete': el => simpleDelete('investments', el.dataset.id, 'ลบรายการลงทุนนี้?'),
+      'invest-delete': el => simpleDelete('investments', el.dataset.id, 'ลบรายการลงทุนนี้? รายการเติมเงินที่บันทึกแล้วจะยังอยู่ในประวัติธุรกรรม'),
       'diary-new': () => openDiaryForm(),
       'diary-edit': el => openDiaryForm(el.dataset.id),
       'diary-delete': el => simpleDelete('diary', el.dataset.id, 'ลบ Diary นี้?'),
@@ -2552,7 +2916,7 @@
     }
     const submitHandlers = {
       tx: submitTx, account: submitAccount, card: submitCard, debt: submitDebt, payment: submitPayment,
-      saving: submitSaving, invest: submitInvest, diary: submitDiary, task: submitTask, category: submitCategory, restore: submitRestore,
+      saving: submitSaving, invest: submitInvest, contribution: submitContribution, diary: submitDiary, task: submitTask, category: submitCategory, restore: submitRestore,
       'settings-min': async form => {
         const v = Number(form.elements.pct.value);
         if (!(form.elements.pct.value.trim() !== '' && v >= 0 && v <= 100)) { showErrors(form, { pct: 'ระบุ 0–100' }); return; }
@@ -2621,12 +2985,14 @@
 
       $('#restore-file').addEventListener('change', async e => {
         const file = e.target.files?.[0]; if (!file) return;
-        try {
-          const obj = JSON.parse(await file.text());
-          const err = validateBackup(obj);
-          if (err) { toast(err, true); return; }
-          openRestore(obj);
-        } catch { toast('อ่านไฟล์ไม่สำเร็จ: ไม่ใช่ JSON ที่ถูกต้อง', true); }
+        // ตรวจขนาดก่อนอ่านไฟล์เข้าหน่วยความจำ
+        if (file.size > MAX_BACKUP_BYTES) { showRestoreErrors([`ไฟล์มีขนาด ${(file.size / 1048576).toFixed(1)} MB เกินขีดจำกัด 10 MB`]); return; }
+        let obj;
+        try { obj = JSON.parse(await file.text()); }
+        catch { showRestoreErrors(['อ่านไฟล์ไม่สำเร็จ: ไม่ใช่ JSON ที่ถูกต้อง']); return; }
+        const v = validateBackup(obj);
+        if (v.errors.length) { showRestoreErrors(v.errors); return; }
+        openRestore(v);
       });
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
         if ((state.settings?.themeMode || 'system') === 'system') { applyTheme(); if (state.activeSection === 'wallet') renderWallet(); }
