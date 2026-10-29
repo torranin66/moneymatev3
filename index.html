@@ -827,7 +827,6 @@
       todoTab: 'open',
       catTab: 'expense',
       diaryFilter: { month: '', mood: '', tag: '' },
-      openDebtHistory: new Set(),
       loadError: ''
     };
 
@@ -1393,6 +1392,9 @@
           const label = out ? lk.withdrawLabel : lk.label;
           return { icon: lk.icon, bg: lk.bg, title: `${label}: ${ent ? ent.name : 'รายการที่ถูกลบ'}`, sub: accName((to || from)?.accountId), sign: out ? '← ' : '→ ', cls: 'xfer', label };
         }
+        // โอนเข้าบัตรเครดิต = ชำระบัตร
+        const toCard = byId('accounts', to?.accountId);
+        if (toCard?.type === 'credit_card') return { icon: 'card', bg: 'var(--rose)', title: `ชำระบัตร: ${toCard.name}`, sub: `จาก ${accName(from?.accountId)}`, sign: '→ ', cls: 'xfer', label: 'ชำระบัตร' };
         return { icon: 'transfer', bg: 'var(--sky)', title: 'โอนเงิน', sub: `${accName(from?.accountId)} → ${accName(to?.accountId)}`, sign: '⇄ ', cls: 'xfer', label: 'โอน' };
       }
       const income = t.type === 'income';
@@ -1413,13 +1415,13 @@
       </button>`;
     }
     const sortTx = list => [...list].sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : a.occurredAt > b.occurredAt ? -1 : 0));
-    function groupedTxList(list) {
+    function groupedTxList(list, showNet = true) {
       let html = '', cur = '';
       let dayHtml = '', dayNet = 0;
       const flush = () => {
         if (!cur) return;
         const label = fmtDateKey(cur, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-        html += `<section class="day-card" aria-label="${escapeHtml(label)}"><div class="day-head"><span>${label}</span><span class="money">${dayNet >= 0 ? '+' : '−'}${fmtMoney(Math.abs(dayNet))}</span></div>${dayHtml}</section>`;
+        html += `<section class="day-card" aria-label="${escapeHtml(label)}"><div class="day-head"><span>${label}</span>${showNet ? `<span class="money">${dayNet >= 0 ? '+' : '−'}${fmtMoney(Math.abs(dayNet))}</span>` : ''}</div>${dayHtml}</section>`;
       };
       for (const t of list) {
         const k = dayKeyOf(t.occurredAt);
@@ -1633,7 +1635,10 @@
           <div class="progress" role="progressbar" aria-label="ใช้วงเงิน" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(used)}"><span style="width:${used}%"></span></div>
           <div class="kv"><div>วงเงิน<b class="money">${fmtMoney(c.limit)}</b></div><div>วงเงินคงเหลือ<b class="money">${fmtMoney(c.remaining)}</b></div>
             <div>ขั้นต่ำ${c.isManual ? ' (กรอกเอง)' : ` (~${c.percent}%)`}<b class="money">${fmtMoney(c.minPayment)}</b></div><div>ครบกำหนด<b>${dueLabel(a.dueDay)}</b></div></div>
-          ${a.isArchived ? '' : `<button type="button" class="btn ghost" style="background:rgba(255,255,255,.65);color:#2E2A3B" data-action="card-pay" data-id="${escapeHtml(a.id)}">ชำระบัตร</button>`}
+          <div class="row">
+            ${a.isArchived ? '' : `<button type="button" class="btn ghost grow" style="background:rgba(255,255,255,.65);color:#2E2A3B" data-action="card-pay" data-id="${escapeHtml(a.id)}">ชำระบัตร</button>`}
+            <button type="button" class="btn ghost grow" style="background:rgba(255,255,255,.65);color:#2E2A3B" data-action="entity-history" data-kind="accounts" data-id="${escapeHtml(a.id)}">ประวัติ (${entityTransactions('accounts', a.id).length.toLocaleString('th-TH')})</button>
+          </div>
         </article>`;
       }).join('') + '</div>';
     }
@@ -1644,8 +1649,6 @@
       const item = d => {
         const st = debtStatus(d), rem = debtRemaining(d), paid = debtPaid(d);
         const pct = d.initialAmountSatang ? Math.min(100, paid / d.initialAmountSatang * 100) : 0;
-        const open = ui.openDebtHistory.has(d.id);
-        const pays = [...(d.payments || [])].sort((a, b) => (a.paidAt < b.paidAt ? 1 : -1));
         return `<article class="card stack" style="gap:8px">
           <div class="row between"><div class="grow"><b class="ellipsis" style="display:block">${escapeHtml(d.name)}</b>
             <span class="small muted">เริ่ม ${fmtDateKey(d.startDate)}${d.dueDate ? ` · ครบกำหนด ${fmtDateKey(d.dueDate)}` : ''}</span></div>${statusChip(st)}
@@ -1655,10 +1658,7 @@
           <div class="small muted">ชำระแล้ว ${fmtMoney(paid)} จาก ${fmtMoney(d.initialAmountSatang)}</div>
           ${d.note ? `<p class="small">${escapeHtml(d.note)}</p>` : ''}
           <div class="row">${st !== 'paid' ? `<button type="button" class="btn sm" data-action="debt-pay" data-id="${escapeHtml(d.id)}">${d.direction === 'payable' ? 'บันทึกชำระ' : 'บันทึกรับชำระ'}</button>` : ''}
-            <button type="button" class="btn sm ghost" data-action="debt-history" data-id="${escapeHtml(d.id)}" aria-expanded="${open}">ประวัติ (${pays.length})</button></div>
-          ${open ? `<div class="list">${pays.length ? pays.map(p => `<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)">
-              <span class="grow">${fmtIsoDate(p.paidAt)} · ${escapeHtml(accName(p.accountId))}${p.note ? ' · ' + escapeHtml(p.note) : ''}</span><b class="money">${fmtMoney(p.amountSatang)}</b>
-              <button type="button" class="link-btn" data-action="payment-delete" data-id="${escapeHtml(d.id)}" data-pid="${escapeHtml(p.id)}" aria-label="ลบรายการชำระ">ลบ</button></div>`).join('') : '<p class="small muted">ยังไม่มีประวัติชำระ</p>'}</div>` : ''}
+            ${historyButton('debts', d.id)}</div>
         </article>`;
       };
       return `<div class="grid two"><div class="card stat"><div class="label">เจ้าหนี้ (เราต้องจ่าย)</div><div class="value money neg">${fmtMoney(sum(pay))}</div></div>
@@ -1671,17 +1671,19 @@
     function wealthSavings() {
       const total = state.savings.reduce((s, x) => s + (x.currentAmountSatang || 0), 0);
       const head = `<div class="card stat"><div class="label">เงินออมรวม</div><div class="value money">${fmtMoney(total)}</div></div>
-        <div class="row between"><span></span><button type="button" class="btn sm" data-action="saving-new">+ เป้าหมาย</button></div>`;
-      if (!state.savings.length) return head + `<div class="card">${emptyState('🐷', 'ยังไม่มีเป้าหมายการออม', '<button type="button" class="btn sm" data-action="saving-new">+ เพิ่มเป้าหมาย</button>')}</div>`;
+        <div class="row between"><span></span><button type="button" class="btn sm" data-action="saving-new">+ เงินออม</button></div>`;
+      if (!state.savings.length) return head + `<div class="card">${emptyState('🐷', 'ยังไม่มีเงินออม', '<button type="button" class="btn sm" data-action="saving-new">+ เพิ่มเงินออม</button>')}</div>`;
       return head + '<div class="grid t2">' + state.savings.map(s => {
-        const pct = s.targetAmountSatang ? s.currentAmountSatang / s.targetAmountSatang * 100 : 0;
+        // เป้าหมายไม่บังคับ: ไม่มีเป้า (null/0) จะไม่แสดง progress
+        const hasTarget = Number.isInteger(s.targetAmountSatang) && s.targetAmountSatang > 0;
+        const pct = hasTarget ? s.currentAmountSatang / s.targetAmountSatang * 100 : 0;
         return `<article class="card stack" style="gap:8px">
           <div class="row"><span class="ico" style="--ico-bg:${escapeHtml(isHex(s.color) ? s.color : '#A8E6CF')}" aria-hidden="true">${iconSvg(s.icon || 'piggy')}</span>
             <div class="grow"><b class="ellipsis" style="display:block">${escapeHtml(s.name)}</b><span class="small muted">${s.targetDate ? 'เป้าหมาย ' + fmtDateKey(s.targetDate) : 'ไม่กำหนดวัน'}</span></div>
             <button type="button" class="icon-btn" data-action="saving-edit" data-id="${escapeHtml(s.id)}" aria-label="แก้ไข ${escapeHtml(s.name)}">${ICON.edit}</button></div>
-          <div class="row between"><b class="money">${fmtMoney(s.currentAmountSatang)}</b><span class="small muted money">/ ${fmtMoney(s.targetAmountSatang)}</span></div>
-          <div class="progress" role="progressbar" aria-label="ความคืบหน้า" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(Math.min(100, pct))}"><span style="width:${Math.min(100, pct)}%;--bar:${escapeHtml(isHex(s.color) ? s.color : '#A8E6CF')}"></span></div>
-          <div class="small">${fmtPct(pct)}${pct >= 100 ? ' · 🎉 ถึงเป้าแล้ว' : ''}</div>
+          <div class="row between"><b class="money">${fmtMoney(s.currentAmountSatang)}</b><span class="small muted money">${hasTarget ? `/ ${fmtMoney(s.targetAmountSatang)}` : 'ไม่กำหนดเป้าหมาย'}</span></div>
+          ${hasTarget ? `<div class="progress" role="progressbar" aria-label="ความคืบหน้า" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(Math.min(100, pct))}"><span style="width:${Math.min(100, pct)}%;--bar:${escapeHtml(isHex(s.color) ? s.color : '#A8E6CF')}"></span></div>
+          <div class="small">${fmtPct(pct)}${pct >= 100 ? ' · 🎉 ถึงเป้าแล้ว' : ''}</div>` : ''}
           ${contributionHistory('savings', s)}
         </article>`;
       }).join('') + '</div>';
@@ -2106,8 +2108,10 @@
         <p class="money" style="font-size:22px;font-weight:700">${fmtMoney(tx.amountSatang)}</p>
         <p class="small muted">${fmtIsoDate(tx.occurredAt, { dateStyle: 'long' })} ${timeOf(tx.occurredAt)} · ${escapeHtml(disp.sub)}</p>
         ${tx.note ? `<p>${escapeHtml(tx.note)}</p>` : ''}
-        <p class="note-box">รายการชำระหนี้ไม่นับเป็นรายรับ/รายจ่าย${d ? ' แก้ไขหรือลบได้ที่ Wealth › หนี้' : ''}</p>
-        <div class="sheet-foot">${d ? `<button type="button" class="btn" data-action="goto-debts">ไปที่หนี้</button>` : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
+        <p class="note-box">รายการชำระหนี้ไม่นับเป็นรายรับ/รายจ่าย · ลบแล้วยอดกระเป๋าและยอดหนี้จะย้อนกลับ</p>
+        <div class="sheet-foot">${d ? `<button type="button" class="btn ghost" data-action="entity-history" data-kind="debts" data-id="${escapeHtml(d.id)}">ประวัติทั้งหมด</button>` : ''}
+          ${d && (d.payments || []).some(p => p.id === tx.id) ? `<button type="button" class="btn danger" data-action="payment-delete" data-id="${escapeHtml(d.id)}" data-pid="${escapeHtml(tx.id)}">ลบรายการ</button>`
+            : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
     }
 
     // ---- ฝาก/ถอน เงินออมและการลงทุน กับกระเป๋า ----
@@ -2184,26 +2188,59 @@
       try { await commitOps(ops); closeAllModals(); renderAll(); toast('ลบรายการแล้ว'); } catch (e) { handleDataError(e); }
     }
     function contributionHistory(col, ent) {
-      const list = [...(ent.contributions || [])].sort((a, b) => (a.at < b.at ? 1 : -1));
-      const open = ui.openDebtHistory.has(ent.id);
       const canWithdraw = withdrawLimit(col, ent) > 0;
       return `<div class="row" style="flex-wrap:wrap"><button type="button" class="btn sm" data-action="contrib-new" data-col="${col}" data-id="${escapeHtml(ent.id)}">+ เพิ่มเงิน</button>
           ${canWithdraw ? `<button type="button" class="btn sm outline" data-action="contrib-withdraw" data-col="${col}" data-id="${escapeHtml(ent.id)}">− ถอน</button>` : ''}
-          <button type="button" class="btn sm ghost" data-action="debt-history" data-id="${escapeHtml(ent.id)}" aria-expanded="${open}">ประวัติ (${list.length})</button></div>
-        ${open ? `<div class="list">${list.length ? list.map(c => `<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)">
-            <span class="grow"><span class="chip ${c.direction === 'out' ? 'peach' : 'mint'}">${c.direction === 'out' ? 'ถอน' : 'ฝาก'}</span> ${fmtIsoDate(c.at)} · ${escapeHtml(accName(c.accountId))}${c.note ? ' · ' + escapeHtml(c.note) : ''}</span>
-            <b class="money">${c.direction === 'out' ? '−' : '+'}${fmtMoney(c.amountSatang)}</b>
-            <button type="button" class="link-btn" data-action="contrib-delete" data-col="${col}" data-id="${escapeHtml(ent.id)}" data-cid="${escapeHtml(c.id)}" aria-label="ลบรายการ${c.direction === 'out' ? 'ถอน' : 'ฝาก'}">ลบ</button></div>`).join('') : '<p class="small muted">ยังไม่มีการฝาก/ถอนกับกระเป๋า</p>'}</div>` : ''}`;
+          ${historyButton(col, ent.id)}</div>`;
     }
     function openContributionInfo(tx) {
       const lk = linkKindOfTx(tx); const ent = byId(lk.col, tx.linkedEntityId); const disp = txDisplay(tx);
+      const linked = ent && (ent.contributions || []).some(c => c.id === tx.id);
       openModal(disp.label, `<div class="stack">
         <p><b>${escapeHtml(disp.title)}</b></p>
         <p class="money" style="font-size:22px;font-weight:700">${fmtMoney(tx.amountSatang)}</p>
         <p class="small muted">${fmtIsoDate(tx.occurredAt, { dateStyle: 'long' })} ${timeOf(tx.occurredAt)} · ${disp.sign.trim() === '←' ? 'เข้า' : 'จาก'} ${escapeHtml(disp.sub)}</p>
         ${tx.note ? `<p>${escapeHtml(tx.note)}</p>` : ''}
-        <p class="note-box">รายการนี้ไม่นับเป็นรายรับ/รายจ่าย${ent ? ` ลบได้ที่ Wealth › ${lk.col === 'savings' ? 'เงินออม' : 'ลงทุน'} › ประวัติ` : ''}</p>
-        <div class="sheet-foot">${ent ? `<button type="button" class="btn" data-action="goto-wealth-tab" data-tab="${lk.tab}">ไปที่${lk.col === 'savings' ? 'เงินออม' : 'การลงทุน'}</button>` : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
+        <p class="note-box">รายการนี้ไม่นับเป็นรายรับ/รายจ่าย · ลบแล้วยอดกระเป๋าและยอด${lk.col === 'savings' ? 'เงินออม' : 'การลงทุน'}จะย้อนกลับ</p>
+        <div class="sheet-foot">${ent ? `<button type="button" class="btn ghost" data-action="entity-history" data-kind="${lk.col}" data-id="${escapeHtml(ent.id)}">ประวัติทั้งหมด</button>` : ''}
+          ${linked ? `<button type="button" class="btn danger" data-action="contrib-delete" data-col="${lk.col}" data-id="${escapeHtml(ent.id)}" data-cid="${escapeHtml(tx.id)}">ลบรายการ</button>`
+            : `<button type="button" class="btn danger" data-action="tx-delete-id" data-id="${escapeHtml(tx.id)}">ลบรายการ</button>`}</div></div>`);
+    }
+
+    // ---- ประวัติรายการรับ-จ่ายของแต่ละบัญชี/บัตร/หนี้/เงินออม/การลงทุน ----
+    const HISTORY_LIMIT = 300;
+    function historyButton(kind, id) {
+      const n = entityTransactions(kind, id).length;
+      return `<button type="button" class="btn sm ghost" data-action="entity-history" data-kind="${kind}" data-id="${escapeHtml(id)}">ประวัติ (${n.toLocaleString('th-TH')})</button>`;
+    }
+    function entityTransactions(kind, id) {
+      if (kind === 'accounts') return state.transactions.filter(t => (t.postings || []).some(p => p.accountId === id));
+      if (kind === 'debts') return state.transactions.filter(t => t.subtype === 'debt_payment' && t.linkedEntityId === id);
+      return state.transactions.filter(t => t.subtype === LINK_KINDS[kind]?.subtype && t.linkedEntityId === id);
+    }
+    function openEntityHistory(kind, id) {
+      const ent = byId(kind, id); if (!ent) return;
+      const list = sortTx(entityTransactions(kind, id));
+      // ยอดรวมเงินเข้า/ออก: บัญชี/บัตร ดูจาก posting ของบัญชีนั้น · หนี้/ออม/ลงทุน ดูจากฝั่งกระเป๋าที่จ่ายหรือรับ
+      let inSum = 0, outSum = 0;
+      for (const t of list) {
+        const d = kind === 'accounts' ? t.postings.filter(p => p.accountId === id).reduce((s, p) => s + p.deltaSatang, 0) : -(t.postings[0]?.deltaSatang || 0);
+        if (d > 0) inSum += d; else outSum += -d;
+      }
+      const labels = kind === 'accounts'
+        ? (ent.type === 'credit_card' ? ['ชำระบัตร/คืนเงิน', 'ใช้จ่ายด้วยบัตร'] : ['เงินเข้า', 'เงินออก'])
+        : kind === 'debts' ? (ent.direction === 'receivable' ? ['—', 'รับชำระแล้ว'] : ['จ่ายชำระแล้ว', '—'])
+          : ['ฝากจากกระเป๋า', 'ถอนกลับเข้ากระเป๋า'];
+      const stat = (label, v) => `<div class="card stat" style="box-shadow:none;background:var(--surface-2)"><div class="label">${label}</div><div class="value money">${label === '—' ? '—' : fmtMoney(v)}</div></div>`;
+      const stats = kind === 'debts'
+        ? `<div class="grid two">${stat(ent.direction === 'receivable' ? 'รับชำระแล้ว' : 'จ่ายชำระแล้ว', ent.direction === 'receivable' ? outSum : inSum)}${stat('คงเหลือ', debtRemaining(ent))}</div>`
+        : `<div class="grid two">${stat(labels[0], inSum)}${stat(labels[1], outSum)}</div>`;
+      const shown = list.slice(0, HISTORY_LIMIT);
+      openModal(`ประวัติ: ${ent.name}`, `<div class="stack">
+        ${stats}
+        <p class="small muted">${list.length.toLocaleString('th-TH')} รายการ · แตะรายการเพื่อดูรายละเอียด แก้ไข หรือลบ</p>
+        ${shown.length ? groupedTxList(shown, false) : emptyState('🧾', 'ยังไม่มีรายการ')}
+        ${list.length > shown.length ? `<p class="small muted">แสดง ${HISTORY_LIMIT} รายการล่าสุด ดูทั้งหมดได้ที่ Wallet โดยกรองตามบัญชี</p>` : ''}</div>`);
     }
 
     /** รายการสำรองจ่าย/รับคืน ตามช่วงเวลาและบัญชีเดียวกับการ์ดใน Wallet */
@@ -2245,6 +2282,7 @@
         ${iconPicker(a?.icon || 'bank')}
         ${fld('color', 'สี', `<input type="color" id="f-color" name="color" value="${escapeHtml(a?.color || '#A9D8FF')}">`)}
         ${a ? `<div class="row" style="flex-wrap:wrap">${a.isArchived ? `<button type="button" class="btn sm ghost" data-action="account-archive" data-id="${escapeHtml(a.id)}" data-val="0">นำกลับมาใช้</button>` : `<button type="button" class="btn sm ghost" data-action="account-archive" data-id="${escapeHtml(a.id)}" data-val="1">เก็บถาวร</button>`}
+          ${historyButton('accounts', a.id)}
           ${hasTx ? '<span class="small muted">มีรายการแล้ว ลบไม่ได้ (เก็บถาวรได้)</span>' : ''}</div>` : ''}
         ${formFoot(a && !hasTx ? 'account-delete' : '', id)}</form>`);
     }
@@ -2389,15 +2427,15 @@
       const remaining = Math.max(0, d.initialAmountSatang - payments.reduce((s, p) => s + p.amountSatang, 0));
       const ops = [{ op: 'set', col: 'debts', id: d.id, data: withMeta({ ...stripId(d), payments, status: remaining > 0 && d.status === 'paid' ? 'active' : d.status }, d) }];
       if (byId('transactions', pid)) ops.push({ op: 'delete', col: 'transactions', id: pid });
-      try { await commitOps(ops); renderAll(); toast('ลบรายการชำระแล้ว'); } catch (e) { handleDataError(e); }
+      try { await commitOps(ops); closeAllModals(); renderAll(); toast('ลบรายการชำระแล้ว'); } catch (e) { handleDataError(e); }
     }
 
     // ---- Savings / Investments ----
     function openSavingForm(id) {
       const s = id ? byId('savings', id) : null;
-      openModal(s ? 'แก้ไขเป้าหมายออม' : 'เพิ่มเป้าหมายออม', `<form data-form="saving" data-id="${escapeHtml(id || '')}" class="form-grid" novalidate>
-        ${fld('name', 'ชื่อเป้าหมาย', inp('name', s?.name, 'maxlength="80"'))}
-        <div class="two">${fld('target', 'เป้าหมาย (บาท)', inp('target', s ? satangToInput(s.targetAmountSatang) : '', 'inputmode="decimal"'))}
+      openModal(s ? 'แก้ไขเงินออม' : 'เพิ่มเงินออม', `<form data-form="saving" data-id="${escapeHtml(id || '')}" class="form-grid" novalidate>
+        ${fld('name', 'ชื่อเงินออม', inp('name', s?.name, 'maxlength="80"'))}
+        <div class="two">${fld('target', 'เป้าหมาย (ไม่บังคับ)', inp('target', s && s.targetAmountSatang ? satangToInput(s.targetAmountSatang) : '', 'inputmode="decimal" placeholder="เว้นว่างได้"'))}
         ${fld('current', 'ยอดสะสมปัจจุบัน', inp('current', s ? satangToInput(s.currentAmountSatang) : '0.00', 'inputmode="decimal"'))}</div>
         ${fld('targetDate', 'วันที่เป้าหมาย', inp('targetDate', s?.targetDate || '', 'type="date"'))}
         ${iconPicker(s?.icon || 'piggy')}
@@ -2406,8 +2444,8 @@
     }
     async function submitSaving(form) {
       const el = form.elements; const errs = {};
-      if (!el.name.value.trim()) errs.name = 'กรอกชื่อเป้าหมาย';
-      const target = requireAmount(errs, 'target', el.target.value);
+      if (!el.name.value.trim()) errs.name = 'กรอกชื่อเงินออม';
+      const target = requireAmount(errs, 'target', el.target.value, { optional: true });
       const current = requireAmount(errs, 'current', el.current.value, { allowZero: true });
       if (el.targetDate.value && !validDate(el.targetDate.value)) errs.targetDate = 'วันที่ไม่ถูกต้อง';
       if (showErrors(form, errs)) return;
@@ -2642,7 +2680,7 @@
         payments: V.list(V.obj({ id: V.id(), amountSatang: V.money({ min: 1 }), paidAt: V.iso(), accountId: V.id(), note: V.str(1000) }), 1000)
       },
       savings: {
-        name: V.str(100, true), targetAmountSatang: V.money({ min: 0 }), currentAmountSatang: V.money({ min: 0 }), targetDate: V.date(true),
+        name: V.str(100, true), targetAmountSatang: V.money({ nullable: true, min: 0 }), currentAmountSatang: V.money({ min: 0 }), targetDate: V.date(true),
         color: V.color(), icon: V.str(40), contributions: V.list(CONTRIBUTION, 2000)
       },
       investments: {
@@ -2862,11 +2900,11 @@
       'debt-edit': el => openDebtForm(el.dataset.id),
       'debt-delete': el => simpleDelete('debts', el.dataset.id, 'ลบรายการหนี้นี้? รายการชำระที่บันทึกแล้วจะยังคงอยู่ในประวัติธุรกรรม'),
       'debt-pay': el => openPaymentForm(el.dataset.id),
-      'debt-history': el => { const id = el.dataset.id; ui.openDebtHistory.has(id) ? ui.openDebtHistory.delete(id) : ui.openDebtHistory.add(id); renderWealth(); },
+      'entity-history': el => { closeAllModals(); openEntityHistory(el.dataset.kind, el.dataset.id); },
       'payment-delete': el => deletePayment(el.dataset.id, el.dataset.pid),
       'saving-new': () => openSavingForm(),
       'saving-edit': el => openSavingForm(el.dataset.id),
-      'saving-delete': el => simpleDelete('savings', el.dataset.id, 'ลบเป้าหมายการออมนี้? รายการเติมเงินที่บันทึกแล้วจะยังอยู่ในประวัติธุรกรรม'),
+      'saving-delete': el => simpleDelete('savings', el.dataset.id, 'ลบเงินออมนี้? รายการเติมเงินที่บันทึกแล้วจะยังอยู่ในประวัติธุรกรรม'),
       'contrib-new': el => openContributionForm(el.dataset.col, el.dataset.id),
       'contrib-withdraw': el => openContributionForm(el.dataset.col, el.dataset.id, 'out'),
       'contrib-delete': el => deleteContribution(el.dataset.col, el.dataset.id, el.dataset.cid),
