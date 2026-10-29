@@ -1530,8 +1530,7 @@
       renderWalletList(cur);
       if (state.activeSection === 'wallet') renderWalletCharts(base, cur);
     }
-    /** รายการใน Wallet: แสดงทีละ DAYS_PER_PAGE วัน และโหลดวันถัดไปอัตโนมัติเมื่อเลื่อนถึงท้ายรายการ */
-    let listObserver = null;
+    /** รายการใน Wallet: แสดงทีละ DAYS_PER_PAGE วัน และกดปุ่ม "ดูเพิ่ม" เพื่อต่อท้ายอีก DAYS_PER_PAGE วัน */
     function renderWalletList(cur = filteredTransactions()) {
       const f = state.filters;
       const q = f.search.trim().toLowerCase();
@@ -1544,22 +1543,17 @@
       const shown = listAll.filter(t => shownDays.has(dayKeyOf(t.occurredAt)));
       const remainingDays = days.length - shownDays.size;
       $('#wallet-list').innerHTML = loadErrorBox() + (shown.length ? groupedTxList(shown) +
-        (remainingDays > 0 ? `<div id="wallet-sentinel" style="text-align:center;margin-top:12px"><button type="button" class="btn ghost" data-action="tx-more">โหลดเพิ่ม (อีก ${remainingDays.toLocaleString('th-TH')} วัน)</button></div>`
+        (remainingDays > 0 ? `<div style="text-align:center;margin-top:12px">
+            <p class="small muted" style="margin-bottom:8px">แสดง ${shownDays.size.toLocaleString('th-TH')} จาก ${days.length.toLocaleString('th-TH')} วัน</p>
+            <button type="button" class="btn ghost block" id="wallet-more" data-action="tx-more">ดูเพิ่มอีก ${Math.min(DAYS_PER_PAGE, remainingDays).toLocaleString('th-TH')} วัน</button></div>`
           : `<p class="small muted" style="text-align:center;margin-top:12px">แสดงครบ ${days.length.toLocaleString('th-TH')} วันแล้ว</p>`)
         : `<div class="card">${emptyState('🧺', q ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการตามตัวกรองนี้', '<button type="button" class="btn sm" data-action="open-add">+ เพิ่มรายการ</button>')}</div>`);
-      listObserver?.disconnect();
-      const sentinel = $('#wallet-sentinel');
-      if (sentinel && 'IntersectionObserver' in window) {
-        listObserver = new IntersectionObserver(entries => {
-          if (entries.some(e => e.isIntersecting) && state.activeSection === 'wallet') loadMoreDays();
-        }, { rootMargin: '0px 0px 300px 0px' });
-        listObserver.observe(sentinel);
-      }
     }
     function loadMoreDays() {
-      listObserver?.disconnect();
       state.filters.limitDays += DAYS_PER_PAGE;
       renderWalletList();
+      // คงตำแหน่งการเลื่อนไว้ และย้าย focus ไปที่ปุ่ม "ดูเพิ่ม" ตัวใหม่ (หรือท้ายรายการ) เพื่อกดต่อได้ทันที
+      $('#wallet-more')?.focus({ preventScroll: true });
     }
     function renderWalletCharts(base, cur) {
       renderPie('pie-income', $('#pie-income-wrap'), groupByCategory(cur, 'income'), 'รายรับตามหมวดหมู่');
